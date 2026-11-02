@@ -137,6 +137,94 @@ The database integration suite creates a uniquely named `ledgerline_test_*` sche
 
 The root `lint` script runs ESLint and a repository-wide Prettier check. The current checkout has a known Prettier warning in `apps/web/tsconfig.json`; the file is not changed by the workspace ESLint commands.
 
+## Browser E2E infrastructure (workflow tests forthcoming)
+
+Playwright infrastructure is configured separately from Vitest. The browser workflow test itself will be added in a later stage; currently this setup provides Playwright, isolated server startup, and the E2E database guard.
+
+Install the project dependencies and Chromium once:
+
+```powershell
+npm.cmd install
+npx.cmd playwright install chromium
+```
+
+Provision an isolated database using a PostgreSQL administrator. These commands are for a **fresh `ledgerline_e2e` database only**. Do not run the `CREATE ROLE` or `CREATE DATABASE` statements again if these roles or the database already exist. The migration role owns the database and migration-created objects; the application role is separate and does not own them.
+
+Start `psql` connected to the administrative database:
+
+```powershell
+psql -U postgres -d postgres
+```
+
+Then provision the roles and database. The `\password` commands prompt for the two distinct secrets without embedding them in the SQL text:
+
+```sql
+CREATE ROLE ledgerline_e2e_migrator
+  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+CREATE ROLE ledgerline_e2e_app
+  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+\password ledgerline_e2e_migrator
+\password ledgerline_e2e_app
+
+CREATE DATABASE ledgerline_e2e OWNER ledgerline_e2e_migrator;
+REVOKE ALL ON DATABASE ledgerline_e2e FROM PUBLIC;
+GRANT CONNECT ON DATABASE ledgerline_e2e
+  TO ledgerline_e2e_migrator, ledgerline_e2e_app;
+\connect ledgerline_e2e
+ALTER SCHEMA public OWNER TO ledgerline_e2e_migrator;
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+GRANT USAGE, CREATE ON SCHEMA public TO ledgerline_e2e_migrator;
+GRANT USAGE ON SCHEMA public TO ledgerline_e2e_app;
+```
+
+The migration role has no superuser, role-creation, or database-creation attributes; its ownership is scoped to this disposable E2E database. The runtime role cannot create schema objects. Keep all E2E data synthetic.
+
+Create the local E2E settings file in the repository root and set the same password used when creating the role:
+
+```powershell
+Copy-Item .env.e2e.example .env.e2e
+```
+
+`.env.e2e` supplies `E2E_PGHOST`, `E2E_PGPORT`, `E2E_PGDATABASE`, `E2E_PGUSER`, `E2E_PGPASSWORD`, `E2E_MIGRATION_PGUSER`, and `E2E_MIGRATION_PGPASSWORD`. Set `E2E_PGUSER=ledgerline_e2e_app` and `E2E_MIGRATION_PGUSER=ledgerline_e2e_migrator`; use the separate passwords set above. The file is ignored by Git. The guard accepts only database `ledgerline_e2e` and these exact role names. Missing, unexpected, or mismatched settings stop the operation before importing code that can connect to PostgreSQL.
+
+Apply schema migrations explicitly when preparing the E2E database. The migration command uses only the migration role. After the migrations complete, run the following SQL as the migration role or a PostgreSQL administrator to grant the API only its current table permissions:
+
+```sql
+GRANT SELECT, INSERT ON TABLE
+  import_batches,
+  imported_trades,
+  reconciliation_runs,
+  reconciliation_results,
+  reconciliation_result_trades,
+  exceptions,
+  audit_events
+TO ledgerline_e2e_app;
+
+GRANT UPDATE ON TABLE import_batches, reconciliation_runs, exceptions
+TO ledgerline_e2e_app;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE ledgerline_e2e_migrator
+  IN SCHEMA public
+  GRANT SELECT, INSERT ON TABLES TO ledgerline_e2e_app;
+```
+
+The API can read and insert records, and update batch, run, and exception status. It has no `UPDATE` or `DELETE` privilege on `audit_events`, no `DELETE`/`TRUNCATE`, and no schema creation privilege. Default privileges apply only to future tables created by the migration role; add a specific `UPDATE` grant in a later migration only if the API actually needs it. The current schema uses UUID defaults and has no sequences to grant.
+
+Set the two roles and passwords in `.env.e2e`, apply migrations using the migration role, and apply the table grants above. Then run the suite:
+
+```powershell
+npm.cmd run db:migrate:e2e
+npm.cmd run test:e2e
+```
+
+`db:migrate:e2e` reads `.env.e2e` locally, validates both configured role names and passwords, then connects only as `ledgerline_e2e_migrator`. The API wrapper independently reads and validates the same file but maps only `ledgerline_e2e_app` credentials into the API pool environment. Neither wrapper loads the root `.env`, and migration credentials are not placed in the API process environment. Playwright does not read `.env.e2e`; it uses fixed ports 3301 and 5174 and removes inherited database environment variables before starting browser workers. The Vite E2E wrapper repeats that sanitization and receives only the API proxy URL and web port. Future E2E cleanup scripts must use `scripts/e2e-env.mjs` and validate before importing database code. No E2E migrations, seeds, database creation, or cleanup run automatically when Playwright is invoked. The normal development scripts and default Vite proxy remain unchanged.
+
+Playwright browser tests live under `tests/e2e` and are excluded from Vitest's `apps/**/*.test.ts(x)` discovery. Existing `npm.cmd run test:db` remains a separate isolated-schema integration suite using `.env`; it is not used to configure E2E processes. Check E2E configuration validation without a PostgreSQL connection using:
+
+```powershell
+npm.cmd run test:e2e:config
+```
+
 ## Current limitations
 
 - There is no authentication or authorization. Do not expose the development API publicly.

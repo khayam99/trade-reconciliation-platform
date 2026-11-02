@@ -168,7 +168,9 @@ export async function getReconciliationRun(pool: Pool, runId: string, pagination
       ...trade,
       validationErrors: validationMessages(trade.validationErrors),
     };
-    tradesByResult.set(resultId, [...(tradesByResult.get(resultId) ?? []), normalizedTrade]);
+    const resultTrades = tradesByResult.get(resultId);
+    if (resultTrades) resultTrades.push(normalizedTrade);
+    else tradesByResult.set(resultId, [normalizedTrade]);
   }
   const results = resultRows.rows.map((row) => {
     const exception = row.exceptionId

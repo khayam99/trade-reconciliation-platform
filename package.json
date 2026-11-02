@@ -13,13 +13,17 @@
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "test:unit": "vitest run",
+    "test:e2e": "playwright test --config=playwright.config.mts",
+    "test:e2e:config": "node --test scripts/e2e-env.test.mjs",
     "db:migrate": "node --env-file-if-exists=.env db/migrate.mjs up",
+    "db:migrate:e2e": "node scripts/e2e-migrate.mjs",
     "db:migrate:down": "node --env-file-if-exists=.env db/migrate.mjs down",
     "db:seed": "node --env-file-if-exists=.env db/seed.mjs",
     "test:db": "node --env-file-if-exists=.env --import tsx --test tests/db/database.integration.test.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",
+    "@playwright/test": "^1.64.1",
     "concurrently": "^9.2.1",
     "eslint": "^9.36.0",
     "eslint-config-prettier": "^10.1.8",
